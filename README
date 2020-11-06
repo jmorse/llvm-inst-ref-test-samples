@@ -1,0 +1,27 @@
+This repo contains samples of new variable locations and dropped variable
+locations as produced by the new instruction referencing model in LLVM,
+see: (insert link here). Specifically, two directories for "missing" and
+"new" locations, within which:
+ * missing*.ll and new*.ll contain the optimised IR for a particular
+   function in clang-3.4 before isel. 
+ * reduced*.ll in each dir contains an llvm-reduced equivalent of the
+   corresponding sample number.
+ * missing*.varname and new*.varname contains the "absolute" variable
+   name that is either new or missing in the corresponding LLVM-IR.
+ * hasdumpvardiff.sh is the interestingness test for llvm-reduce.
+ * The "journal" file contains my notes from studying why locations are
+   new / missing, including a comparison between the reduced and original
+   versions. May contain abnormal amounts of sass depending on how tired
+   I was at the time.
+
+In the root directory:
+ * abs_variable_naming.diff is the patch to dwarfdump that produces an
+   absolute name for each variable seen in a clang-3.4 binary and prints
+   it to stdout. I used a twisty turny maze of scripts, all different,
+   to take new/missing absolute names and extract LLVM-IR for them from
+   the clang-3.4 build directory, which is what you see here.
+ * remove_excess_dbg_values.py: randomly deletes dbg.values from an
+   LLVM-IR file and runs the interestingness test on them, to reduce
+   down to only the relevant variable locations
+
+ALSO: I've gzip'd the IR files, no point wasting excess disk space.

@@ -1,0 +1,161 @@
+Test 0: failed to identify the missing location?
+
+Test 1: There's no dropped location, we just report one more variable as gone
+  not a bug or fault or anything
+
+  Backcheck: Metadata node 19104, goes missing in NORMAL mode during early
+  tail duplication. Apparently not during instr-ref?
+
+  This is a known thing I believe; taildup deletes DBG_VALUEs instead of
+  dropping them.
+
+Test 2: Early taildup strips the labels off a load
+
+  Backcheck: !18396, DBG_VALUEs for "FT" get disappeared during early tail
+  dup, known issue. No actual new dropped locations, just a dropped one
+  reported.
+
+Test 3: Machine sinking of an instr, intervening out of scope block.
+
+  backcheck: dbg.value for !13488 in if.then160: intervening block
+  cond.true.i.i.i has loc of !14638/!14639, scope and inlined-at are
+  !14620 and !14624 resp.
+  While the dbg.value has loc !14635, with scope and inlined-at
+  !13489, !14636 resp.
+  Thus: there's an intervening block that doesn't have a correct scope in there,
+  and we don't track through that. Ooff.
+
+Test 4: failed
+
+Test 5:
+  coalescing error
+
+  Backcheck: dbg.value uses a phi in do.body.i.preheader for jmpPos.sroa.5.01039
+  , metadata variable !16245.
+  Hmmmm: but actually, that SSA Value is live through most of the function,
+  and we correctly places a DBG_PHI for it after virtregrewriter in
+  bb.8.do.body.i.preheader. And that has two predecessors with what looks like
+  a backedge, so it's the right place. However: it then gets folded into the
+  _real_ preheader block after branch folding, and isn't folded into the
+  loop backedge block. Thus, we lose the dominance.
+
+Test 6:
+  Coalescing failure -- enlivens a DBG_VALUE down a path where the computation
+  isn't.
+
+  Backcheck: yes, this is machine sink messing with us. Computation
+  happens in bb.1228.if.end116, two children (bb.1229.if.then.i.i.i.i705 and
+  bb.1230.if.else.i.i.i.i706). The computation gets sunk into one of them,
+  and there's a debug user in the OTHER branch. instruction referencing can
+  tell that this isn't permitted. With DBG_VALUEs though, register coalescing
+  re-enlivens the DBG_VALUE with a wrong value.
+
+Test 7:
+  Coalescing error
+
+  Backcheck:
+  dbg.value for !20903 uses %call183, which is computed in a call in the parent
+  block. Just in the block in question, if.then.i.i362:
+   * %call183 goes out of liveness
+   * Some ADD64ri8 is sunk into the block
+   * and overwrites $rbp, where %call183 was living
+  Totally standard coalescing error re-enlivening variable locations.
+
+Test 8:
+  complicated coalescing merge with subregs gets dropped
+
+  Backcheck: yeah, block bb.22.for.body.i358 has the phi and DBG_INSTR_REF.
+  a gr16 gets merged into a gr64, and it looks like we drop it. Solvable by
+  a bolder approach to coalescing tracking.
+
+Test 9:
+  The same as test 8?
+
+  Backcheck: yeah, block name bb.22.for.body15.i, exactly the same situation.
+  gr16 gets merged into a gr64 and we drop it for some reason.
+
+Test 10: the bug in resolveDbgPHIs
+
+  Backcheck: it looks like there are DBG_PHIs dominating all paths to the
+  DBG_INSTR_REF  we just fail to verify and track them. Just a LiveDebugValues
+  bug.
+
+Test 11: coalesing error
+
+  Backcheck: this is a PHI fairly far from the debug user !44691, and it looks
+  pretty out of liveness by this point. PHI happens in r12, and I see writes
+  to r12 in bb.47.if.then203, half way between the PHI and the debug user.
+
+  Plus just before loop head bb.12.if.end100 there are several writes to r12,
+  where the PHI happens really early in bb.3.
+
+  Conclusion: is a coalescing error.
+
+Test 12: coalesgin error
+
+  Backcheck: dbg.value for !55674 reads %cond, a PHI. It looks out of liveness
+  already. The "cond.end" block reads:
+    DBG_PHI $r8d, 1
+    renamable $rsi = MOV64rm killed renamable $r13, 1, $noreg, 0, $noreg,
+    renamable $r8d = SHL32ri renamable $r8d(tied-def 0), 2
+  So the location for that phi is immediately clobbered. The normal mode
+  DBG_VALUE referring to it is a colescing error.
+
+Test 13: we're tracking based on an undef phi, so something failed in
+  reduction here
+
+  Backcheck: yeah, bb.794 (un-named?) feeding into
+  bb.484._ZN4llvm14getBundleStartEPNS_12MachineInstrE.exit.i.i.i which uses
+  it, has a PHI labelled assigning to vreg %605. That seemingly goes missing.
+  Change in register class? r14 in DBG_VALUE version appears to be correct.
+
+Test 14: This is going to be resolveDbgPHIs.
+
+  Backcheck: yeah: there are no other assignments to $rdi in the function,
+  all paths in are covered by DBG_PHIs, 
+
+Test 15: Coalescing error
+
+  Backcheck: plain coalescing error, have a DBG_PHI ahead of a clobber of
+  the reg (rbp). Deeply uninteresting.
+
+Test 16: Still in progress
+  [XXXXXX?]
+
+Test 17: Coalesing error
+
+  Backcheck: yup, %call180 is used by !68024, is out of liveness by that
+  point, and an add gets sunk on top and allocated to $rbp, clobbering the
+  value.
+
+Test 18: resolveDbgPHIs
+
+  Backcheck: variable is in rbx, has all paths to the DBG_INSTR_REF dominated
+  by DBG_PHIs, we just fail to pick it up. Again, something wrong with the
+  resolveDbgPHIs validation.
+
+Test 19:
+
+  Backcheck: this is a scoping problem. dbg.value for !8136 has location
+  !8145, scope !8137 / IA !8146. For some reason a gratuitous new block is
+  installed with two locations, that aren't in the same scope. value gets
+  machinesink'd across it, ouch.
+
+  Ah: there's a CMOV64 in there that gets turned into a branch. Oooff
+
+Test 20: there's no difference here! Just an additional empty reported.
+
+  Backcheck: early tail dup knackers this. Confirmed by... well... you know.
+  Looking.
+
+Test 21: coalescing failure
+
+  Backcheck: When dbg.values removed, is classic caolescing failure. DBG_PHI
+  on first argument reaches all up to... the instr before hand, where the
+  arg is clobbered.
+
+Test 22: coalescing failure
+
+  Backcheck: dbg.value looks pretty out of liveness; DBG_PHI is placed on
+  r15. Is then clobbered in the first instr of if.else.i.i, which matches
+  what happens in the LLVM-IR.

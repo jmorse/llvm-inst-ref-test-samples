@@ -1,0 +1,188 @@
+Backcheck technique: identify the reduced variable in the unreduced file. If
+there are name collisions, delete dbg.values for each DILocalVariable until
+the interestingness test fails. One var identified, delete all dbg.values that
+don't refer to it. Then go look at the MIR.
+
+That doens't work if there are interactions between dbg.values, in that case
+just delete dbg.values in batches until we fail the interestingness test.
+
+Test 0:
+  Argument %Key is out of liveness the moment it's GEP'd, gets dropped by
+  DBG_VALUE repr, can be tracked through rdi through the whole function by
+  instr referencing.
+
+  Backcheck: There are definitely DBG_VALUEs using the argument past the point
+  where it's live, but there are more uses of it than the reduce case reflects
+
+Test 1:
+  In reduced form: %4 is out of liveness on entry to block 2, is merged with
+  %10 in register coalescing, which re-enlivens it. In this case the DBG_VALUE
+  could be replaced with %10 safely, but we conservatively don't.
+  Location in instr-ref mode looks good, is subregister output of the SHR64ri.
+
+  Backcheck: var name "n", looks pretty identical
+
+Test 2:
+  Plain liveness: program forks thus: < with the dbg.value down a path where
+  the argument isn't used, thus isn't in liveness, is dropped.
+
+  Backcheck: looks pretty similar.
+
+Test 3:
+  Machine-instruction-scheduler (the one during regalloc) places the
+  DBG_INSTR_REF ahead of the defining load; that's out of liveness, and the
+  DBG_VALUE form is dropped. Wheras the instruction referencing form recovers
+  via a use-before-def.
+
+  Backcheck: hard to follow, but "numBits" tracks %32, and one DBG_VALUE of it
+  at least happens at slot 2544B, three instrs after it's in liveness. Would
+  appear there's some interaction with an unrelated DBG_VALUE, not clear what.
+
+Test 4:
+  Obviously use-after-liveness from the IR, although %1 gets salvaged back to
+  %0 , where it's still use-after-liveness. How about the backcheck...
+
+  Backcheck: This is due to liveness, see dbg.value of !13998 in if.end.i.i.i,
+  but hilariously this is becauase a DBG_VALUE is applied _through_ a copy
+  of the value it refers to:
+
+          %176 = something
+21568B    MOV64mr %stack.1.ShuffleMask.i, blah blah
+          DBG_VALUE %176:gr64, $noreg, !"__first", 
+21600B    %653:gr64 = COPY %176:gr64
+
+  The DBG_VALUE is applied to the next slot, 21608B, which makes the read from
+  %176 happen _after_ the COPY, when it's out of liveness!
+
+Test 5:
+  Stack pointer goes out of liveness; instr referencing can track it past that,
+  DBG_VALUE can't.
+
+  Backcheck: In the original file there's a PHI in the way, %12 in the IR.
+  instr-ref drops a DBG_PHI in for this, DBG_VALUE gets given a phi-eliminated
+  vreg of %63. While there's a later use in the blocks, it's down a different
+  path, and the path the DBG_VALUE is on has %63 dead. LiveDebugVars reads it
+  as "undef" i.e. not valid.
+
+Test 6:
+  Debug use-before-def, debug intrinsics land before a load that we target,,
+  instr-ref can resolve this afterwards.
+
+  Backcheck: Yup, it's a debug use-before-def introduced during isel, the
+  relevant DBG_VALUE is placed before the load it refers to. (%127, metadata
+  node 20430).
+
+Test 7:
+  Variable location is out of liveness a the point of dbg.value: looks like
+  all the geps and bitcasts get MachineCSE'd to a higher block
+
+  Backcheck: haven't explored precisely, but there are some identical GEPs
+  based on %E after the dbg.value point, they look like they're MachineCSE'd
+  up in exactly the same way. Either way, the value of parameter %E gets
+  through with the right location.
+
+Test 8
+  Completely unused argument, captured by a DBG_PHI.
+
+  Backcheck: the same argument value is seemingly preserved in two vregs in this
+  function, the lower 32 bits in %2 (low number, must be a cross-bb VReg),
+  while the Arg itself is in %408 (corresponds to the Argument Value?).
+  It looks like Register Coalescing spots that the two things can be merged
+  together, something that is too hot for DBG_VALUE, and my be-conservative
+  code drops it.
+
+Test 9
+  Standard DBG_VALUE is after-liveness. instr-ref is correct.
+
+  Backcheck: Exactly the same.
+
+Test 10
+  Standard DBG_VALUE is after-liveness, captured argument with DBG_PHI
+
+  Backcheck: Again, %this is out of liveness even in the IR. instr-ref looks
+  correct.
+
+Test 11:
+XXX XXX XXX This is one of the tests that failed the sensitivity test.
+Looks like we don't transmit some kind of This thing?
+
+Test 12:
+  Standard after-liveness.
+
+  Backcheck: Exactly the same. instr-ref looks correct.
+
+Test 13:
+  Standard after-liveness, caught argument with DBG_PHI
+
+  Backcheck: there's an absolute maze of GEPs going on here, but the instr
+  ref falls back to the phis in block for.body.i.i.i.i264, which is the
+  correct root of the values the dbg.values refer to.
+
+Test 14:
+  Standard after-liveness. Although, the 'and' in the entry block is sunk
+  into the same block as the DBG_INSTR_REF without anything remarkable
+  happening.
+
+  Backcheck: Exactly the same, value goes out of liveness one block prior.
+
+Test 15:
+  Standard after-liveness. 
+
+  Backcheck: gets the right location, r14 is %this through the function til
+  the final few blocks. As ever, it's just not live at the point a DBG_VALUE
+  points at it.
+
+Test 16:
+  This is actually backwards, we lose locations here. Not clear why this
+  came up.
+
+Test 17:
+  Standard after-liveness, standard instr-ref-can-follow.
+
+  Backcheck: exactly the same, within the same block even.
+
+Test 18:
+  Standard after-liveness, standard instr-ref-can-follow with DBG_PHI
+
+  Backcheck: instr-ref location of $r14 for "S" does appear to be correct, is
+  the incoming argument in rsi, and the path from entry to bb.1476.sw.bb458:
+  doesn't otherwise clobber r14.
+  As for why DBG_VALUEs drop it, it's really hard to trace back the liveness
+  of the relevant vreg, but LiveDebugVariables says "Discarding debug info
+  (reg not live)"
+
+
+Test 19:  
+  Standard after-liveness, standard instr-ref-can-follow with DBG_PHI
+
+  Backcheck: this test is tiny compared to the rest, so it's easy to see that
+  the dbg.value for !18532 is a use when %this is out of liveness. Pleasing to
+  see that the situations llvm-reduce coughs up can be similar to unmodified
+  code.
+
+Test 20:
+  Vastly more interesting: it's still an out of liveness, but for an 
+  interesting reason. We get:
+
+  undef %13.sub_32bit:gr64_nosp = MOV32rr %15.sub_32bit:gr64_with_sub_8bit
+
+  And a DBG_VALUE referring to %15 afterwards. That's officially out of
+  liveness and so gets dropped. More curious is that register coalescing
+  doesn't merge %13 and %15; presumably because the register class difference
+  is meaningful. Thus, it's one of the scenarios where there are potentially
+  two registers containing the same value, and you can't tell which one is 
+  "right" until much later. (instr-ref has no difficulty tracking from the
+  PHI through to the DBG_INSTR_REF)
+
+  Backcheck: the phi in do.end448 for %SJ440.02857 gets put in r13d, which
+  lives on until sw.bb491. But, we pick the wrong location: because the
+  transferDebugInstrRef indentation is wrong! Misery cakes!
+
+Test 21:
+  Standard after-liveness, standard instr-ref-can-follow with DBG_PHI
+
+  dbg.value for !98596 is in sw.bb506 on %s, in MIR its predecessor is more
+  than 1000 blocks away, must be a massive switch. bb.60.cleanup.cont153.
+  tracing back from there we can reach bb.1 and r14=rsi. Looks like all switch
+  blocks get $r14 = %this, but only some of them preserve liveness, thus
+  sometimes DBG_VALUEs don't stick in them.
